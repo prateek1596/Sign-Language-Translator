@@ -6,6 +6,28 @@ from collections import deque, Counter
 import pyttsx3
 import time
 
+# ------------------ NORMALIZATION ------------------
+def get_normalized_landmarks(hand_landmarks):
+    wrist = hand_landmarks.landmark[0]
+
+    coords = []
+    for lm in hand_landmarks.landmark:
+        coords.append([
+            lm.x - wrist.x,
+            lm.y - wrist.y,
+            lm.z - wrist.z
+        ])
+
+    max_val = max([abs(v) for point in coords for v in point])
+    if max_val == 0:
+        return None
+
+    normalized = []
+    for point in coords:
+        normalized.extend([v / max_val for v in point])
+
+    return normalized
+
 # ------------------ LOAD MODEL ------------------
 with open("model.pkl", "rb") as f:
     model = pickle.load(f)
@@ -34,10 +56,10 @@ predictions = deque(maxlen=15)
 current_word = ""
 last_added_letter = ""
 last_hand_time = time.time()
-NO_HAND_TIMEOUT = 1.5  # space after no hand
+NO_HAND_TIMEOUT = 1.5
 
 # ------------------ STABILITY CONTROL ------------------
-STABLE_TIME = 0.8  # seconds sign must be held
+STABLE_TIME = 0.8
 last_pred = ""
 pred_start_time = time.time()
 
@@ -47,6 +69,7 @@ while True:
     if not ret:
         break
 
+    frame = cv2.flip(frame, 1)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = hands.process(rgb)
 
@@ -57,15 +80,9 @@ while True:
         last_hand_time = time.time()
 
         for hand_landmarks in result.multi_hand_landmarks:
-            wrist = hand_landmarks.landmark[0]
-
-            data = []
-            for lm in hand_landmarks.landmark:
-                data.extend([
-                    lm.x - wrist.x,
-                    lm.y - wrist.y,
-                    lm.z - wrist.z
-                ])
+            data = get_normalized_landmarks(hand_landmarks)
+            if data is None:
+                continue
 
             X_input = pd.DataFrame([data], columns=columns)
             pred = model.predict(X_input)[0]
@@ -73,7 +90,7 @@ while True:
             predictions.append(pred)
             final_pred = Counter(predictions).most_common(1)[0][0]
 
-            # ---------- STABILITY FILTER ----------
+            # ---- STABILITY FILTER ----
             if final_pred != last_pred:
                 last_pred = final_pred
                 pred_start_time = time.time()
@@ -84,21 +101,22 @@ while True:
                         last_added_letter = final_pred
                         pred_start_time = time.time()
 
-            # Display current letter
+            # Display
             cv2.putText(frame, f"Letter: {final_pred}", (10, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 2)
 
             cv2.putText(frame, "Hold sign...", (10, 140),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 1,
+                        (255, 255, 0), 2)
 
-    # ---------- SPACE (NO HAND) ----------
+    # ---- SPACE WHEN HAND DISAPPEARS ----
     if not hand_detected and time.time() - last_hand_time > NO_HAND_TIMEOUT:
         if current_word and not current_word.endswith(" "):
             current_word += " "
             last_added_letter = ""
             time.sleep(0.3)
 
-    # ---------- DISPLAY WORD ----------
+    # ---- DISPLAY WORD ----
     cv2.putText(frame, f"Word: {current_word}", (10, 90),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
 
